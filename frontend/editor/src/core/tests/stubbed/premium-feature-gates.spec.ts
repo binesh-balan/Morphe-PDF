@@ -59,6 +59,8 @@ test.describe("Premium / endpoint gating", () => {
         "stirling_jwt",
         "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.signature",
       );
+      // Cookie mode reads this marker instead of the token, which it cannot see.
+      localStorage.setItem("stirling_session", "1");
     });
     await mockAppApis(page, {
       enableLogin: true,

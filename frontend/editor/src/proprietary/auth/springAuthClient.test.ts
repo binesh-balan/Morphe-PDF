@@ -449,4 +449,52 @@ describe("SpringAuthClient", () => {
       });
     });
   });
+
+  // Morphe-PDF: cookie mode (VITE_AUTH_COOKIE_MODE=true). No token is readable, so the
+  // session marker decides whether to ask and /auth/me is the authority on the user.
+  describe("getSession in cookie mode", () => {
+    beforeEach(() => {
+      vi.stubEnv("VITE_AUTH_COOKIE_MODE", "true");
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("verifies the session against /auth/me with no Authorization header", async () => {
+      const mockUser = {
+        id: "123",
+        email: "test@example.com",
+        username: "testuser",
+        role: "USER",
+      };
+      // What a cookie-mode login leaves behind: the marker only, no token.
+      localStorage.setItem("stirling_session", "1");
+
+      vi.mocked(apiClient.get).mockResolvedValueOnce({
+        status: 200,
+        data: { user: mockUser },
+      } as unknown as AxiosResponse);
+
+      const result = await springAuth.getSession();
+
+      expect(apiClient.get).toHaveBeenCalledWith("/api/v1/auth/me", {
+        headers: {},
+        suppressErrorToast: true,
+        skipAuthRedirect: true,
+      });
+      expect(result.data.session?.user).toEqual(mockUser);
+      // The token is in an HttpOnly cookie - script never sees it.
+      expect(result.data.session?.access_token).toBe("");
+      expect(result.error).toBeNull();
+    });
+
+    it("returns no session, and does not call the backend, without the marker", async () => {
+      const result = await springAuth.getSession();
+
+      expect(result.data.session).toBeNull();
+      expect(result.error).toBeNull();
+      expect(apiClient.get).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -108,8 +108,18 @@ Both are dev-only. The two advisories that reached production (`nanoid` CVE-2026
 ### P0 #3 — session JWT still in `localStorage` (cookie mode built, not enabled)
 
 Still the largest open item, and **not closed** despite the migration being merged. The
-backend issues and accepts the HttpOnly cookie, but the frontend flip is gated behind
-`VITE_AUTH_COOKIE_MODE=true` because enabling it fails 30 authenticated UI tests.
+backend issues and accepts the HttpOnly cookie, but the frontend flip is still gated behind
+`VITE_AUTH_COOKIE_MODE=true`.
+
+The 30 authenticated UI test failures that gated it are **fixed**: the session bootstrap
+(`SpringAuthClient.getSession()`) returned early whenever no token was readable, so in cookie
+mode it never asked `/api/v1/auth/me` and the app rendered logged-out. It now verifies against
+the server when the `stirling_session` marker is present, and three more specs that seeded a
+token without that marker were corrected. The stubbed suite passes identically in both modes
+(276 passed / 25 skipped).
+
+What still blocks the flip is everything the stubbed suite cannot reach: the Entra ID and SAML
+round trips, real logout cookie expiry, and desktop/API-key auth.
 
 Two process failures let an unvalidated auth change reach `main`, both worth avoiding again:
 
@@ -119,9 +129,10 @@ Two process failures let an unvalidated auth change reach `main`, both worth avo
 - `frontend-validation` and `playwright-e2e` are path-filtered, so backend/workflow/lockfile
   PRs skip them entirely. A frontend change merged this way can sit unverified indefinitely.
 
-To close it: enable the flag, get the stubbed suite green, then work the test plan in
-[`P0-3-jwt-cookie-migration.md`](./P0-3-jwt-cookie-migration.md) — Entra ID and SAML round
-trips especially.
+To close it: work the test plan in
+[`P0-3-jwt-cookie-migration.md`](./P0-3-jwt-cookie-migration.md) against a real deployment —
+Entra ID and SAML round trips especially — then flip the flag's default. Verify the suite
+against a production build, never the dev server; the reason is documented there.
 
 ### Cross-Origin-Opener-Policy is not set
 

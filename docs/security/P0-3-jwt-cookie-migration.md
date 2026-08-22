@@ -1,6 +1,6 @@
 # P0 #3 — Session JWT moved out of `localStorage` into an HttpOnly cookie
 
-**Status: implemented, DISABLED BY DEFAULT, not verified.**
+**Status: implemented, DISABLED BY DEFAULT, stubbed suite green, IdP round trips unverified.**
 
 > Cookie mode is opt-in behind `VITE_AUTH_COOKIE_MODE=true`. It shipped on by default and
 > that was a mistake: `build.yml` only triggers on PRs targeting `main`, this migration
@@ -9,10 +9,48 @@
 > failed **30 authenticated UI tests**, starting with the settings/config button never
 > rendering.
 >
+> **Those failures are now fixed** — see "Why the suite failed" below. The stubbed suite
+> passes identically in both modes (276 passed / 25 skipped, chromium, `vite preview` over a
+> production build). The flag stays **off** because the stubbed suite cannot exercise the
+> parts most likely to break: the Entra ID and SAML round trips, real logout cookie expiry,
+> and the desktop/API-key paths.
+>
 > **The token therefore still lives in `localStorage` — P0 #3 is not closed.** The backend
 > half is additive and always active: it sets the HttpOnly cookie *and* returns the body
 > token, and accepts either on the way back. So the server is ready; only the frontend flip
 > is gated.
+
+## Why the suite failed
+
+Two defects, one real and one in the tests.
+
+**1. The session bootstrap never asked the server.** `SpringAuthClient.getSession()` opened
+with `const token = getToken(); if (!token) return { session: null }`. In cookie mode
+`getToken()` is null *by design*, so every bootstrap reported "no session" without making a
+request. `UseSession` → `session` → `user` is what gates the settings/config button, which is
+why the symptom read as a missing button and 30 specs timed out waiting for it. Every other
+entry point — `AuthCallback`, `getCurrentUser`, session monitoring — routes through the same
+call, so the one guard disabled all of them.
+
+It now falls through to `/api/v1/auth/me` when the `stirling_session` marker is present,
+sending no `Authorization` header and letting the browser's HttpOnly cookie authenticate the
+request. No marker still means no request and no session.
+
+Cookie mode cannot read token expiry, so `expires_at` is 0 and the *proactive* refresh in
+`startSessionMonitoring()` never fires. The reactive path still covers it: a 401 triggers
+`refreshSession()` through the response interceptor. Give `/auth/me` an expiry field if
+proactive refresh becomes necessary.
+
+**2. Three more specs seeded a token without the marker.** The original pass fixed
+`stub-test-base.ts` plus `audit-log-ui`, `license-states`, `first-login-modal` and
+`api-keys-ui`, but `teams-ui`, `login-agreement-modal` and `premium-feature-gates` build
+their own setup instead of using the fixture, so they were missed. All three now seed
+`stirling_session` alongside `stirling_jwt`.
+
+`live/authentication-login.spec.ts` had the mirror-image bug: it cleared the cookie and the
+token to simulate an expired session but left the marker, so the client believed it still had
+a session and went through a refresh attempt instead of the intended clean logged-out state.
+It now removes the marker too. **Unverified** — the live suite needs a backend.
 
 **Original status note:** The code is written and parses; none of it has been
 exercised against a browser, an identity provider, or the test suite. Treat this document as
@@ -110,12 +148,22 @@ Nothing below is verifiable by inspection. Run all of it.
 9. **With `morphe.security.csrf.enabled=true`:** a cross-site POST without `X-XSRF-TOKEN` is
    rejected; the app's own requests still succeed; SAML login still completes; API-key callers
    still work.
-10. **Existing suites — fixed.** The stubbed Playwright suites seeded `stirling_jwt` into
-    `localStorage` to authenticate, which no longer works in cookie mode. Every seeding site
-    now also sets the `stirling_session` marker that `hasSession()` reads:
-    `core/tests/helpers/stub-test-base.ts` plus `audit-log-ui`, `license-states`,
-    `first-login-modal` and `api-keys-ui`. That is sufficient for the stubbed suite because
-    MSW mocks every backend call; `stirling_jwt` is retained for desktop/bearer mode.
+10. **Existing suites — fixed and verified.** Every seeding site now also sets the
+    `stirling_session` marker that `hasSession()` reads: `core/tests/helpers/stub-test-base.ts`
+    plus `audit-log-ui`, `license-states`, `first-login-modal`, `api-keys-ui`, `teams-ui`,
+    `login-agreement-modal` and `premium-feature-gates`. `stirling_jwt` is retained for
+    desktop/bearer mode.
+
+    Verify with a production build, not the dev server — `vite`'s on-demand transforms blow
+    the 30s navigation timeout on the heavy tool pages and manufacture ~20 failures that have
+    nothing to do with auth (38 minutes and 29 failures, against 4 minutes and 0 failures for
+    the same commit built and previewed):
+
+    ```bash
+    cd frontend
+    VITE_BUILD_FOR_PREVIEW=1 VITE_AUTH_COOKIE_MODE=true npx vite build editor
+    cd editor && CI=1 npx playwright test --project=stubbed --workers=4
+    ```
 
 ## Rollback
 
@@ -127,6 +175,7 @@ headers.
 
 - No web-build code path reads or writes `stirling_jwt` in `localStorage` — **done in code**,
   confirm at runtime.
+- Stubbed Playwright suite passes with the flag on — **done**, at parity with bearer mode.
 - OIDC and SAML logins complete — **unverified**.
 - Desktop and API-key authentication unchanged — **unverified**.
 - CSRF enabled for cookie-authenticated routes — **not done**; flag exists, still off.

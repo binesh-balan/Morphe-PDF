@@ -120,6 +120,9 @@ test.describe("1. Authentication and Login", () => {
       await page.evaluate(() => {
         localStorage.removeItem("stirling_jwt");
         localStorage.removeItem("stirling_refresh_token");
+        // Cookie mode: the marker is what makes the client believe it has a
+        // session, so clearing the cookie alone leaves it trying to refresh.
+        localStorage.removeItem("stirling_session");
       });
       await page.context().addCookies([
         {

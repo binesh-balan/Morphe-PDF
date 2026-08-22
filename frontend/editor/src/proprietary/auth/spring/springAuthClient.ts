@@ -23,7 +23,13 @@ import type {
   AuthResponse,
   AuthChangeEvent,
 } from "@app/auth/types";
-import { getToken, setToken, clearToken } from "@app/services/authTransport";
+import {
+  getToken,
+  setToken,
+  clearToken,
+  hasSession,
+  isCookieMode,
+} from "@app/services/authTransport";
 
 export type { User, Session, AuthError, AuthResponse, AuthChangeEvent };
 
@@ -284,23 +290,33 @@ class SpringAuthClient {
   }
 
   /**
-   * Get current session
-   * JWT is stored in localStorage and sent via Authorization header
+   * Get current session.
+   *
+   * Bearer mode: the JWT comes from localStorage and is sent as an Authorization header.
+   *
+   * Cookie mode: there is no readable token - the credential is an HttpOnly cookie the
+   * page cannot see. The `stirling_session` marker answers "should we even ask?", and
+   * `/api/v1/auth/me` (authenticated by the cookie the browser attaches) is the authority
+   * on who the user is. Without this branch every cookie-mode session bootstrap returned
+   * null, so the app rendered as logged-out.
    */
   async getSession(): Promise<{
     data: { session: Session | null };
     error: AuthError | null;
   }> {
     try {
-      // Get JWT from localStorage
+      // Get JWT from localStorage. Always null in cookie mode.
       let token = getToken();
+      const cookieMode = isCookieMode();
 
-      if (!token) {
-        // console.debug('[SpringAuth] getSession: No JWT in localStorage');
+      if (!token && !(cookieMode && hasSession())) {
+        // console.debug('[SpringAuth] getSession: No session to verify');
         return { data: { session: null }, error: null };
       }
 
-      if (await platform().isDesktopSaaSAuthMode()) {
+      // Desktop is always bearer mode (isCookieMode() is false under Tauri), so a token
+      // is present on this path.
+      if (token && (await platform().isDesktopSaaSAuthMode())) {
         let tokenExpiry = this.getTokenExpiry(token);
         if (tokenExpiry.expiresIn <= this.DESKTOP_SAAS_REFRESH_EARLY_SECONDS) {
           const refreshed = await platform().refreshPlatformSession();
@@ -352,9 +368,8 @@ class SpringAuthClient {
       // Note: We pass the token explicitly here, overriding the interceptor's default
       // console.debug('[SpringAuth] getSession: Verifying JWT with /api/v1/auth/me');
       const meConfig: AuthRequestConfig = {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        // No Authorization header in cookie mode - the browser attaches the cookie.
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
         suppressErrorToast: true, // Suppress global error handler (we handle errors locally)
         // Session bootstrap should not trigger global 401 refresh/redirect loops.
         skipAuthRedirect: true,
@@ -365,11 +380,17 @@ class SpringAuthClient {
       const data = response.data;
       // console.debug('[SpringAuth] /me response data:', data);
 
-      // Create session object
-      const tokenExpiry = this.getTokenExpiry(token);
+      // Create session object.
+      // ponytail: cookie mode cannot read the token, so expiry is unknown and reported as
+      // 0 - which disables the proactive refresh in startSessionMonitoring(). The reactive
+      // path still covers it: a 401 triggers refreshSession() via the response interceptor.
+      // Give the backend a `/auth/me` expiry field if proactive refresh becomes necessary.
+      const tokenExpiry = token
+        ? this.getTokenExpiry(token)
+        : { expiresIn: 0, expiresAt: 0 };
       const session: Session = {
         user: data.user,
-        access_token: token,
+        access_token: token ?? "",
         expires_in: tokenExpiry.expiresIn,
         expires_at: tokenExpiry.expiresAt,
       };

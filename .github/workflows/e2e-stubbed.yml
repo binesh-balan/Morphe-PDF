@@ -12,19 +12,36 @@ permissions:
 
 jobs:
   playwright-e2e:
-    name: playwright-e2e (${{ matrix.browser }})
+    name: playwright-e2e (${{ matrix.label }})
     runs-on: ubuntu-latest
     strategy:
       # One browser breaking must not mask a failure in another - report all.
       fail-fast: false
       matrix:
         include:
-          - browser: chromium
+          - label: chromium
+            browser: chromium
             project: stubbed
-          - browser: firefox
+          - label: firefox
+            browser: firefox
             project: stubbed-firefox
-          - browser: webkit
+          - label: webkit
+            browser: webkit
             project: stubbed-webkit
+          # Morphe-PDF: guards the HttpOnly-cookie auth transport (P0 #3), which
+          # is otherwise never exercised - the flag is off by default, so the
+          # three legs above all run bearer mode. The flag is read at BUILD time
+          # (vite inlines import.meta.env), which is why it belongs on the build
+          # step and not the test step.
+          #
+          # Chromium only, deliberately: this leg guards an auth transport, not
+          # an engine. Adding it to firefox/webkit would triple the cost to
+          # re-test the same code path. Revisit if a cookie bug ever turns out
+          # to be engine-specific.
+          - label: chromium-cookie-auth
+            browser: chromium
+            project: stubbed
+            cookieMode: "true"
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40 # v2.20.1
@@ -45,8 +62,10 @@ jobs:
       - name: Build frontend (production bundle for vite preview)
         env:
           VITE_BUILD_FOR_PREVIEW: "1"
+          # Empty on the default legs, which leaves bearer mode on.
+          VITE_AUTH_COOKIE_MODE: ${{ matrix.cookieMode }}
         run: task frontend:build
-      - name: Run stubbed E2E tests (${{ matrix.browser }})
+      - name: Run stubbed E2E tests (${{ matrix.label }})
         env:
           PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ github.workspace }}/frontend/playwright-report/results.json
         run: task e2e:stubbed-project PROJECT=${{ matrix.project }} -- --workers=3
@@ -63,6 +82,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: playwright-report-stubbed-${{ matrix.browser }}-${{ github.run_id }}
+          name: playwright-report-stubbed-${{ matrix.label }}-${{ github.run_id }}
           path: frontend/playwright-report/
           retention-days: 7
